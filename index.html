@@ -239,7 +239,7 @@ select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var
   function serverFrame(){
     if(srvBusy||!vid.videoWidth) return;
     srvBusy=true; srvLast=performance.now();
-    var c=document.createElement("canvas"),s=Math.min(1,1280/Math.max(vid.videoWidth,vid.videoHeight));
+    var c=document.createElement("canvas"),s=Math.min(1,960/Math.max(vid.videoWidth,vid.videoHeight));
     c.width=Math.round(vid.videoWidth*s); c.height=Math.round(vid.videoHeight*s);
     c.getContext("2d").drawImage(vid,0,0,c.width,c.height);
     c.toBlob(function(b){
@@ -248,7 +248,7 @@ select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var
         srvBusy=false;
         if(t&&running){var ms=Math.round(performance.now()-t0cam);stopCam();t0cam=0;show(t,ms)}
       }).catch(function(){srvBusy=false});
-    },"image/jpeg",0.85);
+    },"image/jpeg",0.8);
   }
 
   /* ---------- upload: browser and server race, first answer wins ---------- */
@@ -335,7 +335,7 @@ select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var
       busy=false;
     }
     var nw=performance.now();
-    if(t0cam&&nw-t0cam>2500&&nw-srvLast>2200) serverFrame();
+    if(t0cam&&nw-t0cam>400&&nw-srvLast>500) serverFrame();
     setTimeout(loop,0);
   }
   $("camBtn").onclick=function(){ if(running){stopCam();say("")} else {t0cam=0;startCam()} };
