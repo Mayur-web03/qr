@@ -73,8 +73,11 @@ select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var
         <div class="row">
           <button class="btn pri" id="camBtn">Start camera</button>
           <button class="btn" id="flip">Switch camera</button>
+          <button class="btn" id="snap">Scan now (sharp frame)</button>
+          <button class="btn" id="takeBtn">Take photo</button>
+          <input type="file" id="cap" accept="image/*" capture="environment" class="hide">
         </div>
-        <p class="hint">Hold the dark QR steady inside the frame. Turn screen brightness up if it will not lock.</p>
+        <p class="hint">Hold the QR steady, about 20 cm away, filling half the frame. If it does not lock in a few seconds, press "Scan now" or "Take photo".</p>
       </div>
       <p id="status" role="status" aria-live="polite"></p>
     </section>
@@ -228,9 +231,10 @@ select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var
 
   /* ---------- upload ---------- */
   /* ---------- server (backend) decoding: /api/decode ---------- */
-  var MAXUP=4*1024*1024, srvBusy=false, srvLast=0;
-  async function postImage(blob){
-    var r=await fetch("/api/decode",{method:"POST",headers:{"Content-Type":"application/octet-stream"},body:blob});
+  var MAXUP=4*1024*1024, srvBusy=false, srvLast=0, srvN=0;
+  async function postImage(blob,live){
+    var r=await fetch("/api/decode",{method:"POST",headers:{"Content-Type":"application/octet-stream","X-Mode":live?"live":"upload"},body:blob});
+    if(r.status===404) throw new Error("Backend not found: /api/decode returned 404. Check that api/decode.py is deployed.");
     if(r.status===413) throw new Error("Image is over 4 MB. Take a screenshot of the QR instead.");
     var j=null; try{j=await r.json()}catch(e){}
     if(!r.ok) throw new Error((j&&j.error)||("Server error "+r.status));
@@ -244,10 +248,14 @@ select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var
     c.getContext("2d").drawImage(vid,0,0,c.width,c.height);
     c.toBlob(function(b){
       if(!b){srvBusy=false;return}
-      postImage(b).then(function(t){
-        srvBusy=false;
+      postImage(b,true).then(function(t){
+        srvBusy=false; srvN++;
         if(t&&running){var ms=Math.round(performance.now()-t0cam);stopCam();t0cam=0;show(t,ms)}
-      }).catch(function(){srvBusy=false});
+        else if(running) say("Looking for a QR… ("+srvN+" frames checked)");
+      }).catch(function(e){
+        srvBusy=false;
+        if(running) say("Server unreachable: "+(e&&e.message||"error")+" Scanning in the browser only. Try Take photo.","err");
+      });
     },"image/jpeg",0.8);
   }
 
@@ -259,7 +267,7 @@ select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var
     var tooBig=f.size>MAXUP;
     say("Reading QR…");
     function win(t){ if(done||!t) return; done=true; show(t,Math.round(performance.now()-t0)) }
-    function fin(){ if(!done) say((cantOpen&&srvErr)||"No QR found. Crop closer to the code, avoid glare, and try again.","err") }
+    function fin(){ if(!done) say("No QR found."+(srvErr?" Server: "+srvErr:" The server also found nothing. Try a sharper photo or crop closer.") ,"err") }
     var srv=tooBig?Promise.resolve():postImage(f).then(win).catch(function(e){srvErr=e&&e.message||""});
     if(tooBig) srvErr="Image is over 4 MB. Take a screenshot of the QR instead.";
     im.onload=function(){
@@ -289,8 +297,14 @@ select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var
     if(!(await ensureLib("jsQR",JSQR_URLS))){say("Scanner library did not load. Check your internet and reload.","err");return}
     try{
       stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:facing},width:{ideal:1920},height:{ideal:1080}}});
-    }catch(e){say("Camera blocked. Allow camera access in your browser settings, or use Upload.","err");return}
-    vid.srcObject=stream; await vid.play();
+    }catch(e){
+      var n=e&&e.name, m=n==="NotAllowedError"?"Camera permission was denied. Allow camera access for this site in browser settings.":
+        n==="NotFoundError"?"No camera found on this device.":
+        n==="NotReadableError"?"The camera is in use by another app. Close it and try again.":
+        "Camera is not available here ("+(n||"error")+").";
+      say(m+" You can still use Take photo or Upload.","err");return
+    }
+    vid.srcObject=stream; try{await vid.play()}catch(e){}
     try{
       var tr=stream.getVideoTracks()[0], cap=tr.getCapabilities?tr.getCapabilities():null;
       if(cap&&cap.focusMode&&cap.focusMode.indexOf("continuous")>-1) await tr.applyConstraints({advanced:[{focusMode:"continuous"}]});
@@ -341,6 +355,21 @@ select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var
   $("camBtn").onclick=function(){ if(running){stopCam();say("")} else {t0cam=0;startCam()} };
   $("flip").onclick=function(){facing=facing==="environment"?"user":"environment"; if(running) startCam()};
 
+  $("snap").onclick=async function(){
+    if(!running||!vid.videoWidth){say("Start the camera first.","err");return}
+    var c=document.createElement("canvas"),s=Math.min(1,1920/Math.max(vid.videoWidth,vid.videoHeight)),t0=performance.now();
+    c.width=Math.round(vid.videoWidth*s); c.height=Math.round(vid.videoHeight*s);
+    c.getContext("2d").drawImage(vid,0,0,c.width,c.height);
+    say("Scanning a sharp frame…");
+    var blob=await new Promise(function(r){c.toBlob(r,"image/jpeg",0.9)});
+    try{
+      var t=await postImage(blob,false);
+      if(t){stopCam();t0cam=0;show(t,Math.round(performance.now()-t0))}
+      else say("Nothing found in that frame. Move closer, hold steady, avoid glare, and press again.","err");
+    }catch(e){say((e&&e.message||"Server error")+" Try Take photo.","err")}
+  };
+  $("takeBtn").onclick=function(){$("cap").click()};
+  $("cap").onchange=function(){var f=$("cap").files[0];$("cap").value="";if(f){tab(false);loadFile(f)}};
   function tab(cam){
     $("tUp").setAttribute("aria-selected",!cam); $("tCam").setAttribute("aria-selected",cam);
     $("pUp").classList.toggle("hide",cam); $("pCam").classList.toggle("hide",!cam);
