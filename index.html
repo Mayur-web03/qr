@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>QR Normalizer</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#f6f4ef;--panel:#fff;--ink:#1d1b18;--mute:#6d675e;--line:#d9d4c9;--accent:#b3261e;--ok:#1f7a45}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#17120f;--panel:#221b17;--ink:#f3ece4;--mute:#a89d90;--line:#3a2f28;--accent:#ff7a66;--ok:#5fcf8f}}
+:root[data-theme="dark"]{--bg:#17120f;--panel:#221b17;--ink:#f3ece4;--mute:#a89d90;--line:#3a2f28;--accent:#ff7a66;--ok:#5fcf8f}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Segoe UI",system-ui,-apple-system,sans-serif}
+main{max-width:880px;margin:0 auto;padding:28px 18px 48px}
+h1{font:700 2rem/1.15 Georgia,"Times New Roman",serif;margin:0 0 6px}
+.sub{color:var(--mute);margin:0 0 24px;max-width:60ch}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:700px){.grid{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+.panel h2{font-size:1rem;margin:0 0 12px}
+#drop{border:2px dashed var(--line);border-radius:8px;min-height:260px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:14px;cursor:pointer;color:var(--mute)}
+#drop.over{border-color:var(--accent);color:var(--ink)}
+#drop img{max-width:100%;max-height:300px;border-radius:6px}
+#out{min-height:260px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center}
+#out img{width:100%;max-width:300px;image-rendering:pixelated;background:#fff;border-radius:6px;border:1px solid var(--line)}
+.msg{color:var(--mute)}
+.err{color:var(--accent)}
+.ok{color:var(--ok);font-weight:600}
+textarea{width:100%;min-height:76px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font:13px/1.4 ui-monospace,Consolas,monospace;padding:8px;resize:vertical}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px}
+button{font:inherit;font-weight:600;border:0;border-radius:6px;padding:9px 14px;background:var(--ink);color:var(--bg);cursor:pointer}
+button.alt{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button:focus-visible,#drop:focus-visible,textarea:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+label{color:var(--mute);font-size:.9rem}
+select{font:inherit;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:6px}
+.tip{margin-top:18px;color:var(--mute);font-size:.9rem}
+</style>
+</head>
+<body>
+<main>
+<h1>QR Normalizer</h1>
+<p class="sub">Upload a dark-mode or inverted QR. It is decoded in your browser and rebuilt as a standard black-on-white code that any scanner can read. Nothing is uploaded to a server.</p>
+
+<div class="grid">
+  <section class="panel">
+    <h2>1. Original QR</h2>
+    <div id="drop" tabindex="0" role="button" aria-label="Choose or drop a QR image">
+      <div id="dropMsg"><strong>Tap to choose an image</strong><br>or drop / paste (Ctrl+V) a screenshot here</div>
+    </div>
+    <input id="file" type="file" accept="image/*" hidden>
+  </section>
+
+  <section class="panel">
+    <h2>2. Standard QR</h2>
+    <div id="out"><span class="msg">The converted code will appear here.</span></div>
+  </section>
+</div>
+
+<section class="panel" style="margin-top:16px">
+  <h2>Decoded text</h2>
+  <textarea id="txt" placeholder="Decoded text appears here. You can also type or paste text to generate a QR directly."></textarea>
+  <div class="row">
+    <label>Error correction
+      <select id="ec"><option value="L">L</option><option value="M" selected>M</option><option value="Q">Q</option><option value="H">H</option></select>
+    </label>
+    <label>Size
+      <select id="size"><option value="400">400 px</option><option value="600" selected>600 px</option><option value="1000">1000 px</option></select>
+    </label>
+    <button id="gen">Regenerate</button>
+    <button class="alt" id="copy">Copy text</button>
+  </div>
+  <p class="tip" id="tip">To save the new QR, press and hold it on mobile or right-click it on desktop and choose Save image.</p>
+</section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<script>
+(function(){
+var drop=document.getElementById('drop'),file=document.getElementById('file'),out=document.getElementById('out'),
+    txt=document.getElementById('txt'),ec=document.getElementById('ec'),size=document.getElementById('size');
+
+function setOut(html){out.innerHTML=html}
+
+var defSTB=qrcode.stringToBytes;
+function tryDecode(imgData,w,h){
+  var r=jsQR(imgData.data,w,h,{inversionAttempts:'attemptBoth'});
+  // ignore empty / false-positive reads and keep trying other versions of the image
+  if(r&&(r.data||(r.binaryData&&r.binaryData.length)))return r;
+  return null;
+}
+
+function decodeImage(img){
+  var max=1400,s=Math.min(1,max/Math.max(img.naturalWidth,img.naturalHeight));
+  var scales=[s,Math.min(1,s*0.6),Math.min(1,s*0.35)];
+  for(var si=0;si<scales.length;si++){
+    var w=Math.round(img.naturalWidth*scales[si]),h=Math.round(img.naturalHeight*scales[si]);
+    var c=document.createElement('canvas');c.width=w;c.height=h;
+    var x=c.getContext('2d',{willReadFrequently:true});x.drawImage(img,0,0,w,h);
+    var d=x.getImageData(0,0,w,h),r=tryDecode(d,w,h);
+    if(r)return r;
+    // fallback: threshold on luminance and on each colour channel
+    var modes=['lum','r','g','b'],ths=[70,100,130,160,190];
+    for(var m=0;m<modes.length;m++){
+      for(var t=0;t<ths.length;t++){
+        var b=new Uint8ClampedArray(d.data.length);
+        for(var i=0;i<d.data.length;i+=4){
+          var R=d.data[i],G=d.data[i+1],B=d.data[i+2];
+          var v=modes[m]==='lum'?0.299*R+0.587*G+0.114*B:modes[m]==='r'?R:modes[m]==='g'?G:B;
+          var o=v>ths[t]?255:0;b[i]=b[i+1]=b[i+2]=o;b[i+3]=255;
+        }
+        r=tryDecode({data:b},w,h);
+        if(r)return r;
+      }
+    }
+  }
+  return null;
+}
+
+var zxReader=null;
+if(typeof ZXing!=='undefined'){
+  try{var hints=new Map();hints.set(ZXing.DecodeHintType.TRY_HARDER,true);hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS,[ZXing.BarcodeFormat.QR_CODE]);
+  zxReader=new ZXing.MultiFormatReader();zxReader.setHints(hints)}catch(e){zxReader=null}
+}
+function tick(){return new Promise(function(r){setTimeout(r,0)})}
+function toCanvas(img,maxDim,crop){
+  var W=img.naturalWidth,H=img.naturalHeight,sx=0,sy=0,sw=W,sh=H;
+  if(crop){sx=Math.round(W*crop[0]);sy=Math.round(H*crop[1]);sw=Math.round(W*crop[2]);sh=Math.round(H*crop[3])}
+  var m=Math.max(sw,sh),s=m<500?600/m:Math.min(1,maxDim/m);
+  var c=document.createElement('canvas');c.width=Math.max(1,Math.round(sw*s));c.height=Math.max(1,Math.round(sh*s));
+  var x=c.getContext('2d',{willReadFrequently:true});x.imageSmoothingQuality='high';
+  x.drawImage(img,sx,sy,sw,sh,0,0,c.width,c.height);return c;
+}
+function lumOf(p,w,h){
+  var l=new Uint8ClampedArray(w*h),mn=255,mx=0,i,v;
+  for(i=0;i<w*h;i++){v=0.299*p[i*4]+0.587*p[i*4+1]+0.114*p[i*4+2];l[i]=v;if(v<mn)mn=v;if(v>mx)mx=v}
+  var k=mx>mn?255/(mx-mn):1;for(i=0;i<l.length;i++)l[i]=(l[i]-mn)*k;return l;
+}
+function inv(l){var o=new Uint8ClampedArray(l.length);for(var i=0;i<l.length;i++)o[i]=255-l[i];return o}
+function zxDecode(l,w,h){
+  if(!zxReader)return null;
+  try{
+    var b=new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(new ZXing.RGBLuminanceSource(l,w,h)));
+    var r=zxReader.decode(b);return r?r.getText():null;
+  }catch(e){return null}
+}
+async function decodeFast(img,say){
+  if('BarcodeDetector' in window){
+    try{var bd=new BarcodeDetector({formats:['qr_code']});var f=await bd.detect(img);
+      if(f.length&&f[0].rawValue)return{data:f[0].rawValue}}catch(e){}
+  }
+  var crops=[null,[0,0.15,1,0.5],[0.1,0.1,0.8,0.8],[0.2,0.2,0.6,0.6]];
+  for(var i=0;i<crops.length;i++){
+    say(i?'Looking closer…':'Reading QR…');await tick();
+    var c=toCanvas(img,900,crops[i]),w=c.width,h=c.height;
+    var d=c.getContext('2d',{willReadFrequently:true}).getImageData(0,0,w,h);
+    var j=jsQR(d.data,w,h,{inversionAttempts:'attemptBoth'});
+    if(j&&j.data)return{data:j.data};
+    var l=lumOf(d.data,w,h),t=zxDecode(l,w,h)||zxDecode(inv(l),w,h);
+    if(t)return{data:t};
+  }
+  return null;
+}
+function render(text,bin){
+  if(!text){setOut('<span class="msg">Nothing to encode.</span>');return}
+  try{
+    qrcode.stringToBytes=bin?function(s){var a=[];for(var i=0;i<s.length;i++)a.push(s.charCodeAt(i)&255);return a}:defSTB;
+    var qr=qrcode(0,ec.value);qr.addData(text,'Byte');qr.make();
+    var n=qr.getModuleCount(),quiet=4,total=n+quiet*2,px=parseInt(size.value,10);
+    var cell=Math.max(1,Math.floor(px/total)),dim=cell*total;
+    var c=document.createElement('canvas');c.width=c.height=dim;
+    var x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,dim,dim);x.fillStyle='#000';
+    for(var r=0;r<n;r++)for(var k=0;k<n;k++)if(qr.isDark(r,k))x.fillRect((k+quiet)*cell,(r+quiet)*cell,cell,cell);
+    setOut('<img alt="Standard black on white QR code" src="'+c.toDataURL('image/png')+'">');
+  }catch(e){
+    setOut('<span class="err">Could not build a QR: the text may be too long for this error-correction level. Try L.</span>');
+  }
+}
+
+function handleFile(f){
+  if(!f||!f.type.startsWith('image/')){setOut('<span class="err">Please choose an image file.</span>');return}
+  var url=URL.createObjectURL(f),img=new Image();
+  img.onload=function(){
+    drop.innerHTML='<img alt="Uploaded QR" src="'+url+'">';
+    setOut('<span class="msg">Reading QR…</span>');
+    decodeFast(img,function(m){setOut('<span class="msg">'+m+'</span>')}).then(function(res){
+      if(res){var t=res.data,bin=false;if(!t){t=String.fromCharCode.apply(null,res.binaryData);bin=true}txt.value=t;setOut('<span class="ok">Decoded</span>');render(t,bin)}
+      else setOut('<span class="err">No QR found. Use a straight, sharp screenshot, crop to the code, and avoid glare or angled photos.</span>');
+    });
+  };
+  img.onerror=function(){setOut('<span class="err">That image could not be opened.</span>')};
+  img.src=url;
+}
+
+drop.addEventListener('click',function(){file.click()});
+drop.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();file.click()}});
+file.addEventListener('change',function(){handleFile(file.files[0])});
+['dragenter','dragover'].forEach(function(ev){drop.addEventListener(ev,function(e){e.preventDefault();drop.classList.add('over')})});
+['dragleave','drop'].forEach(function(ev){drop.addEventListener(ev,function(e){e.preventDefault();drop.classList.remove('over')})});
+drop.addEventListener('drop',function(e){handleFile(e.dataTransfer.files[0])});
+document.addEventListener('paste',function(e){
+  var items=(e.clipboardData||{}).items||[];
+  for(var i=0;i<items.length;i++)if(items[i].type.indexOf('image')===0){handleFile(items[i].getAsFile());break}
+});
+document.getElementById('gen').addEventListener('click',function(){render(txt.value)});
+ec.addEventListener('change',function(){if(txt.value)render(txt.value)});
+size.addEventListener('change',function(){if(txt.value)render(txt.value)});
+document.getElementById('copy').addEventListener('click',function(){
+  try{navigator.clipboard.writeText(txt.value)}catch(e){txt.select();document.execCommand('copy')}
+});
+})();
+</script>
+</body>
+</html>
