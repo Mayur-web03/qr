@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>QR Flip: dark QR to scannable QR</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsqr/1.4.0/jsQR.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#f6f4ef;--panel:#fff;--ink:#1b1a17;--mute:#6b675e;--line:#dcd8cd;--acc:#b3261e;--accink:#fff;--ok:#1f7a45}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15130f;--panel:#1f1c17;--ink:#f1ede3;--mute:#a09a8b;--line:#38332a;--acc:#e0554b;--accink:#15130f;--ok:#5fcf8a}}
+:root[data-theme="dark"]{--bg:#15130f;--panel:#1f1c17;--ink:#f1ede3;--mute:#a09a8b;--line:#38332a;--acc:#e0554b;--accink:#15130f;--ok:#5fcf8a}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Segoe UI",system-ui,-apple-system,Roboto,sans-serif}
+main{max-width:980px;margin:0 auto;padding:20px 16px 48px}
+h1{font:700 1.9rem/1.15 Georgia,"Times New Roman",serif;margin:8px 0 4px}
+.sub{color:var(--mute);margin:0 0 20px;max-width:60ch}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:760px){.grid{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+.tabs{display:flex;gap:6px;margin-bottom:12px}
+.tabs button{flex:1;padding:10px;border:1px solid var(--line);background:transparent;color:var(--ink);border-radius:8px;font:inherit;cursor:pointer}
+.tabs button[aria-selected="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,.drop:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+.drop{border:2px dashed var(--line);border-radius:10px;padding:34px 12px;text-align:center;cursor:pointer;color:var(--mute)}
+.drop.over{border-color:var(--acc);color:var(--ink)}
+.drop strong{color:var(--ink);display:block;font-size:1.05rem}
+.btn{padding:10px 14px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font:inherit;cursor:pointer}
+.btn.pri{background:var(--acc);color:var(--accink);border-color:var(--acc);font-weight:600}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+#camwrap{position:relative;background:#000;border-radius:10px;overflow:hidden;aspect-ratio:4/3}
+video{width:100%;height:100%;object-fit:cover;display:block}
+.reticle{position:absolute;inset:18%;border:3px solid rgba(255,255,255,.85);border-radius:14px;pointer-events:none}
+#status{margin:10px 0 0;font-size:.92rem;color:var(--mute);min-height:1.4em}
+#status.ok{color:var(--ok);font-weight:600}
+#status.err{color:var(--acc)}
+textarea{width:100%;min-height:92px;resize:vertical;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:14px/1.4 ui-monospace,Consolas,monospace;word-break:break-all}
+label{font-size:.9rem;color:var(--mute)}
+select,input[type=range]{font:inherit}
+select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink)}
+.out{display:flex;justify-content:center;padding:14px;background:#fff;border-radius:10px;border:1px solid var(--line);margin-top:10px}
+#outq{max-width:100%;height:auto;image-rendering:pixelated}
+.hide{display:none}
+.prev{max-width:100%;max-height:170px;border-radius:8px;margin-top:10px;display:block}
+.hint{font-size:.85rem;color:var(--mute);margin:12px 0 0}
+</style>
+</head>
+<body>
+<main>
+  <h1>QR Flip</h1>
+  <p class="sub">Scan or upload a dark-mode QR (light squares on a dark background). Get the text back in about a second, plus a standard black-on-white QR that every scanner reads.</p>
+
+  <div class="grid">
+    <section class="card" aria-label="Input">
+      <div class="tabs" role="tablist">
+        <button role="tab" id="tUp" aria-selected="true">Upload image</button>
+        <button role="tab" id="tCam" aria-selected="false">Live scan</button>
+      </div>
+
+      <div id="pUp">
+        <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose a QR image">
+          <strong>Drop, paste or choose a photo</strong>
+          Screenshots and camera photos both work
+        </div>
+        <input type="file" id="file" accept="image/*" class="hide">
+        <img id="prev" class="prev hide" alt="Uploaded QR preview">
+      </div>
+
+      <div id="pCam" class="hide">
+        <div id="camwrap"><video id="vid" playsinline muted></video><div class="reticle"></div></div>
+        <div class="row">
+          <button class="btn pri" id="camBtn">Start camera</button>
+          <button class="btn" id="flip">Switch camera</button>
+        </div>
+        <p class="hint">Hold the dark QR steady inside the frame. Turn screen brightness up if it will not lock.</p>
+      </div>
+      <p id="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="card" aria-label="Result">
+      <label for="txt">Decoded text (edit to regenerate)</label>
+      <textarea id="txt" placeholder="Scanned text appears here. You can also type or paste text to make a QR."></textarea>
+      <div class="row">
+        <button class="btn" id="copy">Copy text</button>
+        <label>Error correction
+          <select id="ec"><option value="M">Medium</option><option value="Q" selected>Quartile</option><option value="H">High</option></select>
+        </label>
+      </div>
+      <div class="out"><canvas id="outq" width="10" height="10" aria-label="Regenerated QR code"></canvas></div>
+      <div class="row">
+        <button class="btn pri" id="dl">Download PNG</button>
+        <button class="btn" id="cpimg">Copy image</button>
+        <label>Size <select id="sz"><option value="512">512 px</option><option value="1024" selected>1024 px</option><option value="2048">2048 px</option></select></label>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+(function(){
+  var $=function(i){return document.getElementById(i)};
+  var status=$("status"), txt=$("txt"), out=$("outq");
+  var stream=null, running=false, facing="environment", busy=false;
+  var work=document.createElement("canvas"), wctx=work.getContext("2d",{willReadFrequently:true});
+  var detector=null;
+  try{ if("BarcodeDetector" in window) detector=new BarcodeDetector({formats:["qr_code"]}); }catch(e){}
+  try{ qrcode.stringToBytes=qrcode.stringToBytesFuncs["UTF-8"]; }catch(e){}
+
+  function say(m,c){status.textContent=m;status.className=c||""}
+
+  /* ---------- decoding ---------- */
+  function grab(src,sw,sh,maxd){
+    var s=Math.min(1,maxd/Math.max(sw,sh));
+    work.width=Math.max(1,Math.round(sw*s)); work.height=Math.max(1,Math.round(sh*s));
+    wctx.drawImage(src,0,0,work.width,work.height);
+    return wctx.getImageData(0,0,work.width,work.height);
+  }
+  function grabR(src,x,y,w,maxd){
+    var s=Math.min(1,maxd/w), c=Math.max(1,Math.round(w*s));
+    work.width=c; work.height=c;
+    wctx.drawImage(src,x,y,w,w,0,0,c,c);
+    return wctx.getImageData(0,0,c,c);
+  }
+  function threshold(img,ch){
+    var d=img.data,n=d.length/4,g=new Uint8Array(n),h=new Uint32Array(256),i;
+    for(i=0;i<n;i++){var v=ch?d[i*4+1]:((d[i*4]*77+d[i*4+1]*150+d[i*4+2]*29)>>8);g[i]=v;h[v]++}
+    var sum=0;for(i=0;i<256;i++)sum+=i*h[i];
+    var sb=0,wb=0,mx=0,t=128;
+    for(i=0;i<256;i++){wb+=h[i];if(!wb)continue;var wf=n-wb;if(!wf)break;sb+=i*h[i];
+      var mb=sb/wb,mf=(sum-sb)/wf,b=wb*wf*(mb-mf)*(mb-mf);if(b>mx){mx=b;t=i}}
+    var o=new ImageData(img.width,img.height);
+    for(i=0;i<n;i++){var c=g[i]>t?255:0;o.data[i*4]=o.data[i*4+1]=o.data[i*4+2]=c;o.data[i*4+3]=255}
+    return o;
+  }
+  function tryJs(img){
+    return jsQR(img.data,img.width,img.height,{inversionAttempts:"attemptBoth"});
+  }
+  /* Full pipeline for still images: several sizes, then binarised fallback */
+  function pause(){return new Promise(function(r){setTimeout(r,0)})}
+  function loadOne(u){return new Promise(function(res,rej){var s=document.createElement("script");s.src=u;s.onload=res;s.onerror=function(){rej(new Error("load failed"))};document.head.appendChild(s)})}
+  async function ensureLib(name,urls){
+    if(typeof window[name]!=="undefined") return true;
+    for(var i=0;i<urls.length;i++){
+      try{await loadOne(urls[i]); if(typeof window[name]!=="undefined") return true;}catch(e){}
+    }
+    return false;
+  }
+  var JSQR_URLS=["https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js","https://cdnjs.cloudflare.com/ajax/libs/jsqr/1.4.0/jsQR.min.js"];
+  var QRG_URLS=["https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js","https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"];
+  function withTimeout(p,ms){
+    return new Promise(function(res,rej){
+      var t=setTimeout(function(){detector=null;rej(new Error("detector timeout"))},ms);
+      p.then(function(v){clearTimeout(t);res(v)},function(e){clearTimeout(t);rej(e)});
+    });
+  }
+  async function decodeStill(src,sw,sh){
+    if(!(await ensureLib("jsQR",JSQR_URLS))) throw new Error("Scanner library did not load from any source. Check your internet or ad-blocker and reload.");
+    var m=Math.min(sw,sh), wins=[];
+    [1,0.7,0.5].forEach(function(f){
+      var w=Math.round(m*f), st=Math.max(1,Math.round(w/2));
+      for(var y=0;;y+=st){
+        var yy=Math.min(y,sh-w);
+        for(var x=0;;x+=st){var xx=Math.min(x,sw-w);wins.push([xx,yy,w]);if(xx>=sw-w)break}
+        if(yy>=sh-w)break;
+      }
+    });
+    var cx=sw/2,cy=sh/2;
+    wins.sort(function(a,b){return Math.hypot(a[0]+a[2]/2-cx,a[1]+a[2]/2-cy)-Math.hypot(b[0]+b[2]/2-cx,b[1]+b[2]/2-cy)});
+    var deadline=performance.now()+10000;
+    for(var k=0;k<wins.length;k++){
+      var W=wins[k], ds=[Math.min(W[2],640),320];
+      if(ds[0]<=320) ds=[ds[0]];
+      for(var j=0;j<ds.length;j++){
+        if(performance.now()>deadline) return null;
+        await pause();
+        var img=grabR(src,W[0],W[1],W[2],ds[j]);
+        var r=tryJs(img); if(r) return r.data;
+        r=tryJs(threshold(img,0)); if(r) return r.data;
+        r=tryJs(threshold(img,1)); if(r) return r.data;
+      }
+    }
+    return null;
+  }
+  async function decodeStillFast(src,sw,sh){
+    if(detector){
+      try{var b=await withTimeout(detector.detect(src),800); if(b&&b.length) return b[0].rawValue;}catch(e){}
+    }
+    return decodeStill(src,sw,sh);
+  }
+
+  function show(text,ms){
+    txt.value=text; render();
+    say("Decoded in "+ms+" ms. New QR is ready below.","ok");
+  }
+
+  /* ---------- upload ---------- */
+  function loadFile(f){
+    if(!f||!f.type||f.type.indexOf("image")!==0){say("Choose an image file.","err");return}
+    var url=URL.createObjectURL(f), im=new Image();
+    im.onload=async function(){
+      var p=$("prev");p.src=url;p.classList.remove("hide");
+      say("Reading QR…");
+      var t0=performance.now();
+      var r=null;
+      try{ r=await decodeStillFast(im,im.naturalWidth,im.naturalHeight); }
+      catch(e){ say("Error: "+(e&&e.message||e),"err"); return; }
+      var ms=Math.round(performance.now()-t0);
+      if(r) show(r,ms); else say("No QR found. Crop closer to the code, avoid glare, and try again.","err");
+    };
+    im.onerror=function(){say("Could not open that image.","err")};
+    im.src=url;
+  }
+  var drop=$("drop"),file=$("file");
+  drop.onclick=function(){file.click()};
+  drop.onkeydown=function(e){if(e.key==="Enter"||e.key===" "){e.preventDefault();file.click()}};
+  file.onchange=function(){loadFile(file.files[0]);file.value=""};
+  ["dragenter","dragover"].forEach(function(n){drop.addEventListener(n,function(e){e.preventDefault();drop.classList.add("over")})});
+  ["dragleave","drop"].forEach(function(n){drop.addEventListener(n,function(e){e.preventDefault();drop.classList.remove("over")})});
+  drop.addEventListener("drop",function(e){loadFile(e.dataTransfer.files[0])});
+  document.addEventListener("paste",function(e){
+    var it=e.clipboardData&&e.clipboardData.files;
+    if(it&&it.length){$("tUp").click();loadFile(it[0])}
+  });
+
+  /* ---------- live scan ---------- */
+  var vid=$("vid");
+  async function startCam(){
+    stopCam();
+    if(!(await ensureLib("jsQR",JSQR_URLS))){say("Scanner library did not load. Check your internet and reload.","err");return}
+    try{
+      stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:facing},width:{ideal:1280},height:{ideal:720}}});
+    }catch(e){say("Camera blocked. Allow camera access in your browser settings, or use Upload.","err");return}
+    vid.srcObject=stream; await vid.play();
+    running=true; $("camBtn").textContent="Stop camera"; say("Looking for a QR…");
+    loop();
+  }
+  function stopCam(){
+    running=false;
+    if(stream){stream.getTracks().forEach(function(t){t.stop()});stream=null}
+    vid.srcObject=null; $("camBtn").textContent="Start camera";
+  }
+  var t0cam=0,last=0;
+  async function loop(){
+    if(!running) return;
+    var now=performance.now();
+    if(!t0cam) t0cam=now;
+    if(!busy && now-last>90 && vid.videoWidth){
+      busy=true; last=now;
+      try{
+        var res=null;
+        if(detector){ try{var b=await withTimeout(detector.detect(vid),700); if(b.length) res=b[0].rawValue;}catch(e){} }
+        if(!res){
+          var img=grab(vid,vid.videoWidth,vid.videoHeight,640);
+          var r=tryJs(img); if(!r) r=tryJs(threshold(img));
+          if(r) res=r.data;
+        }
+        if(res){
+          var ms=Math.round(performance.now()-t0cam);
+          if(navigator.vibrate) try{navigator.vibrate(60)}catch(e){}
+          stopCam(); t0cam=0; show(res,ms); busy=false; return;
+        }
+      }catch(e){}
+      busy=false;
+    }
+    requestAnimationFrame(loop);
+  }
+  $("camBtn").onclick=function(){ if(running){stopCam();say("")} else {t0cam=0;startCam()} };
+  $("flip").onclick=function(){facing=facing==="environment"?"user":"environment"; if(running) startCam()};
+
+  function tab(cam){
+    $("tUp").setAttribute("aria-selected",!cam); $("tCam").setAttribute("aria-selected",cam);
+    $("pUp").classList.toggle("hide",cam); $("pCam").classList.toggle("hide",!cam);
+    if(!cam) {stopCam();}
+    say("");
+  }
+  $("tUp").onclick=function(){tab(false)};
+  $("tCam").onclick=function(){tab(true); t0cam=0; startCam()};
+  document.addEventListener("visibilitychange",function(){if(document.hidden&&running){stopCam()}});
+
+  /* ---------- generate standard QR ---------- */
+  function render(){
+    if(typeof qrcode==="undefined"){
+      ensureLib("qrcode",QRG_URLS).then(function(ok){
+        if(ok){try{qrcode.stringToBytes=qrcode.stringToBytesFuncs["UTF-8"]}catch(e){} render()}
+        else say("QR generator did not load. Reload the page.","err");
+      });
+      return;
+    }
+    var t=txt.value, size=parseInt($("sz").value,10);
+    var ctx=out.getContext("2d");
+    if(!t){out.width=out.height=10;ctx.fillStyle="#fff";ctx.fillRect(0,0,10,10);return}
+    var q;
+    try{ q=qrcode(0,$("ec").value); q.addData(t,"Byte"); q.make(); }
+    catch(e){ say("Text is too long for a QR code.","err"); return }
+    var n=q.getModuleCount(), quiet=4, total=n+quiet*2;
+    var cell=Math.max(1,Math.floor(size/total)), px=cell*total;
+    out.width=out.height=px;
+    ctx.fillStyle="#fff";ctx.fillRect(0,0,px,px);
+    ctx.fillStyle="#000";
+    for(var r=0;r<n;r++)for(var c=0;c<n;c++) if(q.isDark(r,c)) ctx.fillRect((c+quiet)*cell,(r+quiet)*cell,cell,cell);
+    out.style.width=Math.min(px,360)+"px";
+  }
+  txt.oninput=render; $("ec").onchange=render; $("sz").onchange=render;
+  $("copy").onclick=function(){
+    if(!txt.value) return;
+    navigator.clipboard.writeText(txt.value).then(function(){say("Text copied.","ok")},function(){txt.select();say("Press copy on your keyboard.")});
+  };
+  $("dl").onclick=function(){
+    if(!txt.value){say("Nothing to download yet.","err");return}
+    var a=document.createElement("a");a.download="qr-standard.png";a.href=out.toDataURL("image/png");a.click();
+  };
+  $("cpimg").onclick=function(){
+    if(!txt.value){say("Nothing to copy yet.","err");return}
+    out.toBlob(function(b){
+      try{navigator.clipboard.write([new ClipboardItem({"image/png":b})]).then(function(){say("Image copied.","ok")},function(){say("Copy not allowed here. Use Download.","err")})}
+      catch(e){say("Copy not supported here. Use Download.","err")}
+    });
+  };
+  render();
+})();
+</script>
+</body>
+</html>
