@@ -1,0 +1,4 @@
+zxing-cpp>=2.2.0
+numpy
+pillow
+pillow-heif
