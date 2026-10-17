@@ -1,128 +1,150 @@
-// POST /api/decode  (body: raw image bytes, Content-Type: application/octet-stream)
-// Returns { text: "<decoded>" } or { text: null }.
-// Handles JPG, PNG, WebP, GIF, AVIF and iPhone HEIC. Tries normal + inverted QR,
-// several crops and sizes, so dark-mode / inverted codes decode too.
-const sharp = require('sharp');
-const jsQR = require('jsqr');
-const Z = require('@zxing/library');
+"""POST /api/decode  (raw image bytes, Content-Type: application/octet-stream)
+Returns {"text": "..."} or {"text": null}.
+Engine: zxing-cpp (the C++ ZXing reader). Finds a QR anywhere in a full photo or
+screenshot, handles inverted / dark-mode codes, rotation, and iPhone HEIC files."""
+import io
+import json
+import time
+from http.server import BaseHTTPRequestHandler
 
-const hints = new Map();
-hints.set(Z.DecodeHintType.TRY_HARDER, true);
-hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.QR_CODE]);
+import numpy as np
+from PIL import Image, ImageOps
 
-function readBody(req) {
-  if (Buffer.isBuffer(req.body)) return Promise.resolve(req.body);
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    req.on('data', (c) => chunks.push(c));
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
-  });
-}
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except Exception:
+    pass
 
-async function rgba(buf, maxDim) {
-  const { data, info } = await sharp(buf, { failOn: 'none' })
-    .rotate()
-    .flatten({ background: '#ffffff' })
-    .resize({ width: maxDim, height: maxDim, fit: 'inside', withoutEnlargement: true })
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-  return { data, w: info.width, h: info.height };
-}
+import zxingcpp
 
-// Decode to pixels; if the format is unsupported (HEIC), convert to JPEG first.
-async function load(buf, maxDim) {
-  try {
-    return { px: await rgba(buf, maxDim), buf };
-  } catch (e) {
-    const convert = require('heic-convert');
-    const jpg = Buffer.from(await convert({ buffer: buf, format: 'JPEG', quality: 0.92 }));
-    return { px: await rgba(jpg, maxDim), buf: jpg };
-  }
-}
 
-function crop(px, x, y, cw, ch) {
-  const out = Buffer.alloc(cw * ch * 4);
-  for (let r = 0; r < ch; r++) {
-    px.data.copy(out, r * cw * 4, ((y + r) * px.w + x) * 4, ((y + r) * px.w + x + cw) * 4);
-  }
-  return { data: out, w: cw, h: ch };
-}
+def _read(arr):
+    """Run zxing-cpp on one uint8 array; return text or None."""
+    try:
+        res = zxingcpp.read_barcodes(
+            arr, formats=zxingcpp.BarcodeFormat.QRCode, try_rotate=True, try_downscale=True)
+    except TypeError:
+        res = zxingcpp.read_barcodes(arr)
+    for r in res:
+        if r.text:
+            return r.text
+    return None
 
-function luminance(px, invert) {
-  const n = px.w * px.h, l = new Uint8ClampedArray(n);
-  let mn = 255, mx = 0;
-  for (let i = 0; i < n; i++) {
-    const v = (px.data[i * 4] * 77 + px.data[i * 4 + 1] * 150 + px.data[i * 4 + 2] * 29) >> 8;
-    l[i] = v; if (v < mn) mn = v; if (v > mx) mx = v;
-  }
-  const k = mx > mn ? 255 / (mx - mn) : 1;
-  for (let i = 0; i < n; i++) { const v = (l[i] - mn) * k; l[i] = invert ? 255 - v : v; }
-  return l;
-}
 
-function decodeView(px) {
-  const r = jsQR(new Uint8ClampedArray(px.data.buffer, px.data.byteOffset, px.data.length),
-                 px.w, px.h, { inversionAttempts: 'attemptBoth' });
-  if (r && r.data) return r.data;
-  for (const inv of [false, true]) {
-    try {
-      const reader = new Z.MultiFormatReader();
-      reader.setHints(hints);
-      const bmp = new Z.BinaryBitmap(new Z.HybridBinarizer(
-        new Z.RGBLuminanceSource(luminance(px, inv), px.w, px.h)));
-      const res = reader.decode(bmp);
-      if (res && res.getText()) return res.getText();
-    } catch (e) { /* not found in this view */ }
-  }
-  return null;
-}
+def _views(gray):
+    """Normal, inverted and contrast-stretched copies of one grayscale array."""
+    yield gray
+    yield 255 - gray
+    lo, hi = np.percentile(gray, 2), np.percentile(gray, 98)
+    if hi - lo > 20:
+        st = np.clip((gray.astype(np.float32) - lo) * (255.0 / (hi - lo)), 0, 255).astype(np.uint8)
+        yield st
+        yield 255 - st
 
-function windows(w, h) {
-  const m = Math.min(w, h), list = [];
-  [0.85, 0.6, 0.42].forEach((f) => {
-    const s = Math.round(m * f), step = Math.max(1, Math.round(s / 2));
-    for (let y = 0; ; y += step) {
-      const yy = Math.min(y, h - s);
-      for (let x = 0; ; x += step) {
-        const xx = Math.min(x, w - s);
-        list.push([xx, yy, s]);
-        if (xx >= w - s) break;
-      }
-      if (yy >= h - s) break;
-    }
-  });
-  const cx = w / 2, cy = h / 2;
-  list.sort((a, b) => Math.hypot(a[0] + a[2] / 2 - cx, a[1] + a[2] / 2 - cy) -
-                      Math.hypot(b[0] + b[2] / 2 - cx, b[1] + b[2] / 2 - cy));
-  return list.slice(0, 18);
-}
 
-module.exports = async (req, res) => {
-  if (req.method !== 'POST') { res.setHeader('Allow', 'POST'); return res.status(405).json({ error: 'Use POST' }); }
-  try {
-    const body = await readBody(req);
-    if (!body || !body.length) return res.status(400).json({ error: 'Empty upload' });
-    const deadline = Date.now() + 20000;
+def _try_gray(gray):
+    for v in _views(np.ascontiguousarray(gray)):
+        t = _read(v)
+        if t:
+            return t
+    return None
 
-    const big = await load(body, 1600);
-    let t = decodeView(big.px);                       // 1. whole image
-    if (t) return res.status(200).json({ text: t });
 
-    try {                                             // 2. smaller copy (helps screen moire/noise)
-      const small = await rgba(big.buf, 700);
-      t = decodeView(small);
-      if (t) return res.status(200).json({ text: t });
-    } catch (e) {}
+def _windows(w, h):
+    m = min(w, h)
+    out = []
+    for f in (0.8, 0.55, 0.38):
+        s = int(m * f)
+        step = max(1, s // 2)
+        y = 0
+        while True:
+            yy = min(y, h - s)
+            x = 0
+            while True:
+                xx = min(x, w - s)
+                out.append((xx, yy, s))
+                if xx >= w - s:
+                    break
+                x += step
+            if yy >= h - s:
+                break
+            y += step
+    cx, cy = w / 2, h / 2
+    out.sort(key=lambda a: (a[0] + a[2] / 2 - cx) ** 2 + (a[1] + a[2] / 2 - cy) ** 2)
+    return out[:20]
 
-    for (const [x, y, s] of windows(big.px.w, big.px.h)) {   // 3. zoomed crops, centre first
-      if (Date.now() > deadline) break;
-      t = decodeView(crop(big.px, x, y, s, s));
-      if (t) return res.status(200).json({ text: t });
-    }
-    return res.status(200).json({ text: null });
-  } catch (e) {
-    return res.status(422).json({ error: 'Could not read that image file.' });
-  }
-};
+
+def find_qr(im, budget=20.0):
+    t_end = time.time() + budget
+    im = im.convert("RGB")
+    im.thumbnail((2000, 2000), Image.LANCZOS)
+    rgb = np.asarray(im)
+    lum = np.asarray(im.convert("L"))
+
+    # 1) whole image: luminance, then single colour channels (helps coloured backgrounds)
+    for g in (lum, rgb[:, :, 1], rgb[:, :, 2], rgb[:, :, 0]):
+        t = _try_gray(g)
+        if t:
+            return t
+
+    # 2) smaller copy (reduces screen moire and noise)
+    small = im.copy()
+    small.thumbnail((800, 800), Image.LANCZOS)
+    t = _try_gray(np.asarray(small.convert("L")))
+    if t:
+        return t
+
+    # 3) zoomed windows, centre first, upscaled if tiny
+    h, w = lum.shape
+    for x, y, s in _windows(w, h):
+        if time.time() > t_end:
+            break
+        crop = Image.fromarray(lum[y:y + s, x:x + s])
+        if s < 500:
+            crop = crop.resize((500, 500), Image.LANCZOS)
+        elif s > 900:
+            crop = crop.resize((900, 900), Image.LANCZOS)
+        t = _try_gray(np.asarray(crop))
+        if t:
+            return t
+    return None
+
+
+def open_image(body):
+    im = Image.open(io.BytesIO(body))
+    im = ImageOps.exif_transpose(im)
+    if im.mode in ("RGBA", "LA", "P"):
+        im = im.convert("RGBA")
+        bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
+        bg.alpha_composite(im)
+        im = bg
+    return im.convert("RGB")
+
+
+class handler(BaseHTTPRequestHandler):
+    def _send(self, code, obj):
+        data = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        self._send(405, {"error": "Use POST"})
+
+    def do_POST(self):
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(n)
+            if not body:
+                return self._send(400, {"error": "Empty upload"})
+            try:
+                im = open_image(body)
+            except Exception:
+                return self._send(422, {"error": "Could not read that image file."})
+            self._send(200, {"text": find_qr(im)})
+        except Exception:
+            self._send(500, {"error": "Server error while scanning."})
