@@ -19,16 +19,29 @@ except Exception:
 import zxingcpp
 
 
+_BIN = getattr(zxingcpp, "Binarizer", None)
+BINARIZERS = [None] + [getattr(_BIN, n) for n in ("GlobalHistogram", "LocalAverage", "FixedThreshold")
+                       if _BIN is not None and hasattr(_BIN, n)]
+
+
 def _read(arr):
-    """Run zxing-cpp on one uint8 array; return text or None."""
-    try:
-        res = zxingcpp.read_barcodes(
-            arr, formats=zxingcpp.BarcodeFormat.QRCode, try_rotate=True, try_downscale=True)
-    except TypeError:
-        res = zxingcpp.read_barcodes(arr)
-    for r in res:
-        if r.text:
-            return r.text
+    """Run zxing-cpp on one uint8 array (several binarizers); return text or None."""
+    for b in BINARIZERS:
+        kw = dict(formats=zxingcpp.BarcodeFormat.QRCode, try_rotate=True, try_downscale=True)
+        if b is not None:
+            kw["binarizer"] = b
+        try:
+            res = zxingcpp.read_barcodes(arr, **kw)
+        except TypeError:
+            try:
+                res = zxingcpp.read_barcodes(arr)
+            except Exception:
+                res = []
+        except Exception:
+            res = []
+        for r in res:
+            if r.text:
+                return r.text
     return None
 
 
@@ -76,6 +89,7 @@ def _windows(w, h):
 
 
 def find_qr(im, budget=20.0):
+    """budget: seconds. Live camera frames use a short budget so results stay quick."""
     t_end = time.time() + budget
     im = im.convert("RGB")
     im.thumbnail((2000, 2000), Image.LANCZOS)
@@ -84,6 +98,8 @@ def find_qr(im, budget=20.0):
 
     # 1) whole image: luminance, then single colour channels (helps coloured backgrounds)
     for g in (lum, rgb[:, :, 1], rgb[:, :, 2], rgb[:, :, 0]):
+        if time.time() > t_end:
+            return None
         t = _try_gray(g)
         if t:
             return t
@@ -94,6 +110,14 @@ def find_qr(im, budget=20.0):
     t = _try_gray(np.asarray(small.convert("L")))
     if t:
         return t
+    for edge in (1200, 500):   # more sizes: the best scale differs per photo
+        sm = im.copy()
+        sm.thumbnail((edge, edge), Image.LANCZOS)
+        t = _try_gray(np.asarray(sm.convert("L")))
+        if t:
+            return t
+        if time.time() > t_end:
+            return None
 
     # 3) zoomed windows, centre first, upscaled if tiny
     h, w = lum.shape
@@ -145,6 +169,7 @@ class handler(BaseHTTPRequestHandler):
                 im = open_image(body)
             except Exception:
                 return self._send(422, {"error": "Could not read that image file."})
-            self._send(200, {"text": find_qr(im)})
+            live = self.headers.get("X-Mode") == "live"
+            self._send(200, {"text": find_qr(im, 4.0 if live else 20.0)})
         except Exception:
             self._send(500, {"error": "Server error while scanning."})
