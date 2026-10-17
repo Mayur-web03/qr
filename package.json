@@ -1,0 +1,12 @@
+{
+  "name": "qr-flip",
+  "version": "1.0.0",
+  "private": true,
+  "engines": { "node": "22.x" },
+  "dependencies": {
+    "@zxing/library": "0.21.3",
+    "heic-convert": "2.1.0",
+    "jsqr": "1.4.0",
+    "sharp": "0.33.5"
+  }
+}
