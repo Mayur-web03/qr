@@ -88,16 +88,18 @@ def _windows(w, h):
     return out[:20]
 
 
-def find_qr(im, budget=20.0):
-    """budget: seconds. Live camera frames use a short budget so results stay quick."""
+def find_qr(im, budget=20.0, live=False):
+    """budget: seconds. Live camera frames use a short budget and fewer channels
+    so results stay quick."""
     t_end = time.time() + budget
     im = im.convert("RGB")
     im.thumbnail((2000, 2000), Image.LANCZOS)
     rgb = np.asarray(im)
     lum = np.asarray(im.convert("L"))
 
-    # 1) whole image: luminance, then single colour channels (helps coloured backgrounds)
-    for g in (lum, rgb[:, :, 1], rgb[:, :, 2], rgb[:, :, 0]):
+    # 1) whole image: luminance (live), or luminance + single colour channels (upload)
+    chans = (lum,) if live else (lum, rgb[:, :, 1], rgb[:, :, 2], rgb[:, :, 0])
+    for g in chans:
         if time.time() > t_end:
             return None
         t = _try_gray(g)
@@ -170,6 +172,6 @@ class handler(BaseHTTPRequestHandler):
             except Exception:
                 return self._send(422, {"error": "Could not read that image file."})
             live = self.headers.get("X-Mode") == "live"
-            self._send(200, {"text": find_qr(im, 4.0 if live else 20.0)})
+            self._send(200, {"text": find_qr(im, 4.0 if live else 20.0, live)})
         except Exception:
             self._send(500, {"error": "Server error while scanning."})
