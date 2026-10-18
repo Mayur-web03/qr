@@ -108,7 +108,7 @@ select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var
   var status=$("status"), txt=$("txt"), out=$("outq");
   var stream=null, running=false, facing="environment", busy=false;
   var work=document.createElement("canvas"), wctx=work.getContext("2d",{willReadFrequently:true});
-  var detector=null;
+  var detector=null, detMiss=0;
   try{ if("BarcodeDetector" in window) detector=new BarcodeDetector({formats:["qr_code"]}); }catch(e){}
   try{ qrcode.stringToBytes=qrcode.stringToBytesFuncs["UTF-8"]; }catch(e){}
 
@@ -166,11 +166,10 @@ select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var
     if(!zxReader && !initZX()) return null;
     try{
       var b=new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(new ZXing.RGBLuminanceSource(lumOf(img,inv),img.width,img.height)));
-      var r=zxReader.decode(b); return r?r.getText():null;
+      /* FIX 1: decodeWithState keeps the hints set in initZX(); decode() resets them */
+      var r=zxReader.decodeWithState(b); return r?r.getText():null;
     }catch(e){return null}
   }
-  /* start loading ZXing in the background so it is ready before the first scan */
-  /* Full pipeline for still images: several sizes, then binarised fallback */
   function pause(){return new Promise(function(r){setTimeout(r,0)})}
   function loadOne(u){return new Promise(function(res,rej){var s=document.createElement("script");s.src=u;s.onload=res;s.onerror=function(){rej(new Error("load failed"))};document.head.appendChild(s)})}
   async function ensureLib(name,urls){
@@ -183,9 +182,11 @@ select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var
   var JSQR_URLS=["https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js","https://cdnjs.cloudflare.com/ajax/libs/jsqr/1.4.0/jsQR.min.js"];
   ensureLib("ZXing",ZX_URLS).then(initZX);
   var QRG_URLS=["https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js","https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"];
+
+  /* FIX 2: a slow detector call no longer disables the detector permanently */
   function withTimeout(p,ms){
     return new Promise(function(res,rej){
-      var t=setTimeout(function(){detector=null;rej(new Error("detector timeout"))},ms);
+      var t=setTimeout(function(){rej(new Error("detector timeout"))},ms);
       p.then(function(v){clearTimeout(t);res(v)},function(e){clearTimeout(t);rej(e)});
     });
   }
@@ -230,9 +231,9 @@ select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var
     say("Decoded in "+ms+" ms. New QR is ready below.","ok");
   }
 
-  /* ---------- upload ---------- */
   /* ---------- server (backend) decoding: /api/decode ---------- */
   var MAXUP=4*1024*1024, srvBusy=false, srvLast=0, srvN=0;
+  var srvDead=false, srvFails=0;
   async function postImage(blob,live){
     var r=await fetch("/api/decode",{method:"POST",headers:{"Content-Type":"application/octet-stream","X-Mode":live?"live":"upload"},body:blob});
     if(r.status===404) throw new Error("Backend not found: /api/decode returned 404. Check that api/decode.py is deployed.");
@@ -241,8 +242,9 @@ select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var
     if(!r.ok) throw new Error((j&&j.error)||("Server error "+r.status));
     return j&&j.text||null;
   }
+  /* FIX 5: stop hammering a dead server and keep the status line clean */
   function serverFrame(){
-    if(srvBusy||!vid.videoWidth) return;
+    if(srvDead||srvBusy||!vid.videoWidth) return;
     srvBusy=true; srvLast=performance.now();
     var c=document.createElement("canvas"),s=Math.min(1,960/Math.max(vid.videoWidth,vid.videoHeight));
     c.width=Math.round(vid.videoWidth*s); c.height=Math.round(vid.videoHeight*s);
@@ -250,12 +252,15 @@ select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var
     c.toBlob(function(b){
       if(!b){srvBusy=false;return}
       postImage(b,true).then(function(t){
-        srvBusy=false; srvN++;
+        srvBusy=false; srvFails=0; srvN++;
         if(t&&running){var ms=Math.round(performance.now()-t0cam);stopCam();t0cam=0;show(t,ms)}
         else if(running) say("Looking for a QR… ("+srvN+" frames checked)");
-      }).catch(function(e){
+      }).catch(function(){
         srvBusy=false;
-        if(running) say("Server unreachable: "+(e&&e.message||"error")+" Scanning in the browser only. Try Take photo.","err");
+        if(++srvFails>=3){
+          srvDead=true;
+          if(running) say("Scanning in the browser only. Hold steady, or use Take photo.");
+        }
       });
     },"image/jpeg",0.8);
   }
@@ -310,7 +315,8 @@ select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var
       var tr=stream.getVideoTracks()[0], cap=tr.getCapabilities?tr.getCapabilities():null;
       if(cap&&cap.focusMode&&cap.focusMode.indexOf("continuous")>-1) await tr.applyConstraints({advanced:[{focusMode:"continuous"}]});
     }catch(e){}
-    running=true; frameNo=0; srvBusy=false; srvLast=0; t0cam=performance.now(); $("camBtn").textContent="Stop camera"; say("Hold the QR steady, fill about half the frame…");
+    running=true; frameNo=0; srvBusy=false; srvLast=0; srvDead=false; srvFails=0; detMiss=0;
+    t0cam=performance.now(); $("camBtn").textContent="Stop camera"; say("Hold the QR steady, fill about half the frame…");
     loop();
   }
   function stopCam(){
@@ -319,27 +325,38 @@ select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var
     vid.srcObject=null; $("camBtn").textContent="Start camera";
   }
   var t0cam=0,frameNo=0;
-  /* Each frame looks at a different view (full / zoomed centre / higher-res) and
-     tries jsQR, ZXing and inverted ZXing, so the QR is found fast at any distance. */
+
+  /* FIX 3: larger and tighter views so a half-frame QR keeps enough pixels.
+     Each frame tries a different view with jsQR, ZXing (normal + inverted) and a binarised fallback. */
   function decodeFrame(n){
-    var W=vid.videoWidth,H=vid.videoHeight,m=Math.min(W,H),v=n%5,img,w,r,t;
-    if(v===0) img=grab(vid,W,H,640);
-    else if(v===1){w=Math.round(m*0.75);img=grabR(vid,(W-w)/2,(H-w)/2,w,480)}
-    else if(v===2) img=grab(vid,W,H,960);
-    else if(v===3){w=Math.round(m*0.5);img=grabR(vid,(W-w)/2,(H-w)/2,w,400)}
-    else {w=m;img=grabR(vid,(W-w)/2,(H-w)/2,w,720)}
+    var W=vid.videoWidth,H=vid.videoHeight,m=Math.min(W,H),v=n%6,img,w,r,t;
+    if(v===0) img=grab(vid,W,H,800);
+    else if(v===1){w=Math.round(m*0.8);img=grabR(vid,(W-w)/2,(H-w)/2,w,640)}
+    else if(v===2) img=grab(vid,W,H,1280);
+    else if(v===3){w=Math.round(m*0.5);img=grabR(vid,(W-w)/2,(H-w)/2,w,500)}
+    else if(v===4){w=m;img=grabR(vid,(W-w)/2,(H-w)/2,w,900)}
+    else {w=Math.round(m*0.35);img=grabR(vid,(W-w)/2,(H-w)/2,w,350)}
     r=tryJs(img); if(r&&r.data) return r.data;
     t=zx(img,false)||zx(img,true); if(t) return t;
-    if(v===1||v===3){r=tryJs(threshold(img,0)); if(r&&r.data) return r.data}
+    r=tryJs(threshold(img,0)); if(r&&r.data) return r.data;
     return null;
   }
+
+  /* FIX 4: wait politely while video starts; detector only disabled after repeated failures */
   async function loop(){
     if(!running) return;
-    if(!busy && vid.videoWidth){
+    if(!vid.videoWidth){ setTimeout(loop,60); return }
+    if(!busy){
       busy=true;
       try{
         var res=null;
-        if(detector){ try{var bb=await withTimeout(detector.detect(vid),400); if(bb.length&&bb[0].rawValue) res=bb[0].rawValue;}catch(e){} }
+        if(detector){
+          try{
+            var bb=await withTimeout(detector.detect(vid),700);
+            detMiss=0;
+            if(bb.length&&bb[0].rawValue) res=bb[0].rawValue;
+          }catch(e){ if(++detMiss>5) detector=null; }
+        }
         if(!res) res=decodeFrame(frameNo++);
         if(res){
           var ms=Math.round(performance.now()-(t0cam||performance.now()));
